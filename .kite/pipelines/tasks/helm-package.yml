@@ -1,0 +1,19 @@
+---
+platform: linux
+
+image_resource:
+  type: docker-image
+  source:
+    repository: linkyard/docker-helm
+
+inputs:
+  - name: hellokite-repo
+
+run:
+  path: sh
+  args:
+    - "-exc"
+    - |
+      helm init --client-only
+      helm package hellokite-repo/.kite/charts/hellokite/
+
