@@ -1,6 +1,6 @@
 # Check `docs/pipeline.md` to get info about this file
 resources:
-  - name: hellokite-repo
+  - name: hellokite-repository
     type: git
     source:
       uri: https://github.com/calj/hellokite.git
@@ -13,41 +13,49 @@ resources:
       username: _json_key
       password: ((gcr_password))
 
+
 jobs:
-
-  - name: build-master
+  - name: build
     serial: true
     plan:
-      - get: hellokite-repo
+      - get: hellokite-repository
         trigger: true
-      - put: hellokite-image
-        params:
-          build: hellokite-repo
 
-  - name: shipit
-    serial: true
-    plan:
-      - get: hellokite-repo
-      - task: helm-package
-        file: hellokite-repo/.kite/pipelines/tasks/helm-package.yml
-
-      - task: helm-deploy
-        params:
-          GOOGLE_APPLICATION_JSON: ((gcr_key))
+      - task: tag
         config:
           platform: linux
-
           image_resource:
             type: docker-image
             source:
-              repository: linkyard/docker-helm
-
-          inputs:
-            - name: hellokite-repo
+              repository: alpine/git
           run:
-            path: "sh"
-            args:
-              - "-exc"
-              - |
-                echo ${GOOGLE_APPLICATION_JSON} > gcr_credentials.json
-                export GOOGLE_APPLICATION_CREDENTIALS="${PWD}/gcr_credentials.json"
+            path: sh
+            args: ['-xc', 'cd hellokite-repository && git rev-parse --short=8 HEAD > ../tag/name']
+          inputs:
+            - name: hellokite-repository
+          outputs:
+            - name: tag
+
+      - put: hellokite-image
+        params:
+          build: hellokite-repository
+          tag: tag/name
+
+  - name: test
+    serial: true
+    plan:
+      - get: hellokite-image
+        passed: [build]
+        trigger: true
+
+      - get: hellokite-repository
+        passed: [build]
+        trigger: true
+
+      - task: run-tests
+        image: hellokite-image
+        config:
+          platform: linux
+          run:
+            path: sh
+            args: ["-xc", "find / 2> /dev/null | grep server.js"]
