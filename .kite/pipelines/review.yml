@@ -1,10 +1,29 @@
 # Check `docs/pipeline.md` to get info about this file
+resource_types:
+  - name: slack-notification
+    type: docker-image
+    source:
+      repository: cfcommunity/slack-notification-resource
+      tag: latest
+
+  - name: pull-request
+    type: docker-image
+    source:
+      repository: jtarchie/pr
+
 resources:
   - name: hellokite-repository
     type: git
     source:
       uri: https://github.com/calj/hellokite.git
       branch: master
+
+  - name: pull-requests
+    type: pull-request
+    source:
+      base: master
+      repo: calj/hellokite
+      uri: https://github.com/calj/hellokite.git
 
   - name: hellokite-image
     type: docker-image
@@ -13,49 +32,78 @@ resources:
       username: _json_key
       password: ((gcr_password))
 
+  - name: slack-alert
+    type: slack-notification
+    source:
+      url: https://hooks.slack.com/services/((slack_webhook))
 
 jobs:
-  - name: build
+  - name: pr-build
+    plan:
+      - get: pull-requests
+        trigger: true
+      - task: tag
+        file: pull-requests/.kite/pipelines/tasks/create-pull-requests-tag.yml
+      - put: hellokite-image
+        params:
+          build: pull-requests
+          tag: tag/name
+
+  - name: pr-unit
+    serial: true
+    plan:
+      - get: pull-requests
+        passed: [pr-build]
+        trigger: true
+      - get: hellokite-image
+        passed: [pr-build]
+        trigger: true
+      - put: pull-requests
+        params:
+          path: pull-requests
+          status: pending
+      - task: run-tests
+        file: pull-requests/.kite/pipelines/tasks/run-tests.yml
+        on_failure:
+          put: pull-requests
+          params:
+            path: pull-requests
+            status: failure
+        on_success:
+          put: pull-requests
+          params:
+            path: pull-requests
+            status: success
+
+  - name: master-build
     serial: true
     plan:
       - get: hellokite-repository
         trigger: true
-
       - task: tag
-        config:
-          platform: linux
-          image_resource:
-            type: docker-image
-            source:
-              repository: alpine/git
-          run:
-            path: sh
-            args: ['-xc', 'cd hellokite-repository && git rev-parse --short=8 HEAD > ../tag/name']
-          inputs:
-            - name: hellokite-repository
-          outputs:
-            - name: tag
-
+        file: hellokite-repository/.kite/pipelines/tasks/create-repository-tag.yml
       - put: hellokite-image
         params:
           build: hellokite-repository
           tag: tag/name
+      - put: slack-alert
+        params:
+          channel: 'general'
+          text: |
+            hellokite master branch was built and pushed!
+            Check it out at:
+            $ATC_EXTERNAL_URL/$BUILD_TEAM_NAME/pipelines/$BUILD_PIPELINE_NAME/jobs/$BUILD_JOB_NAME/builds/$BUILD_NAME
+            or at:
+            $ATC_EXTERNAL_URL/builds/$BUILD_ID
 
-  - name: test
+  - name: master-unit
     serial: true
     plan:
-      - get: hellokite-image
-        passed: [build]
-        trigger: true
-
       - get: hellokite-repository
-        passed: [build]
+        passed: [master-build]
         trigger: true
-
+      - get: hellokite-image
+        passed: [master-build]
+        trigger: true
       - task: run-tests
-        image: hellokite-image
-        config:
-          platform: linux
-          run:
-            path: sh
-            args: ["-xc", "find / 2> /dev/null | grep server.js"]
+        file: hellokite-repository/.kite/pipelines/tasks/run-tests.yml
